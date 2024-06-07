@@ -1,0 +1,309 @@
+---
+title: "Klasyfikacja twarzy osób noszących okulary"
+subtitle: "Projekt z Automatycznej Analizy Obrazu"
+author: "Igor Nowiński"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-summary: "Pokaż kod"
+    code-overflow: wrap
+    smooth-scroll: true
+    highlight-style: arrow
+    code-block-bg: true
+    code-block-border-left: "#31BAE9"
+    toc: true
+    toc-title: "Spis treści"
+language: 'polski.yml'
+editor: source
+echo: false
+warning: false
+message: false
+self-contained: true
+embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+# Cel badania
+
+Celem jest stworzenie jak najlepszej sieci neuronowej, przeznaczonej do klasyfikacji dwuklasowej.
+
+# Opis zbioru danych
+
+```{r wczytanie bibliotek oraz danych}
+library(keras)
+library(tidyverse)
+data_dir = "dane/glasses"
+classes <- list.dirs("dane/glasses/train", full.names = FALSE, recursive = FALSE)
+library(imager)
+files <-  list.files(data_dir, recursive = T, full.name = T)
+with_glasses_example <- files[10009]
+without_glasses_example <- files[2013]
+with_glasses_example <- load.image(with_glasses_example)
+without_glasses_example <- load.image(without_glasses_example)
+```
+
+Zbiór danych pochodzi z [Kaggle](https://www.kaggle.com/datasets/jeffheaton/glasses-or-no-glasses/data). Został stworzony na potrzeby projektu naukowego wchodzącego w kurs o zastosowaniach sieci głębokich na Washington University w St. Louis. Zawiera on `r length(files)` zdjęć twarzy osób noszących okulary lub nie. Zostały one stworzone przez generatywną sieć przeciwników (ang. Generative Adversarial Network).
+
+```{r podział na zbiór treningowy, walidacyjny i testowy}
+train_datagen <- image_data_generator()
+val_datagen <- image_data_generator()
+test_datagen <- image_data_generator()
+
+train_generator <- flow_images_from_directory(
+    "dane/glasses/train", train_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+
+val_generator <- flow_images_from_directory(
+    "dane/glasses/val", val_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+
+test_generator <- flow_images_from_directory(
+    "dane/glasses/test", test_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+```
+
+### Przykładowe zdjęcia
+
+:::{.panel-tabset}
+
+## Z okularami
+
+```{r przykładowe zdjęcie z okularami, echo=TRUE}
+#| label: fig-with_glasses
+#| fig-cap: Przykładowe zdjęcie osoby noszącej okulary
+plot(with_glasses_example)
+```
+
+## Bez okularów
+
+```{r przykładowe zdjęcie bez okularów, echo=TRUE}
+#| label: fig-without_glasses
+#| fig-cap: Przykładowe zdjęcie osoby nie noszącej okularów
+plot(without_glasses_example)
+```
+
+:::
+
+## Podział zbioru na część treningową, walidacyjną i testową
+
+Podzieliłem zbiór na odpowiednie części, gdzie rozkład klas widać w tabelkach poniżej. Do dalszej analizy przyjmuję oznaczenia klas:
+
+-   0 - osoba z okularami
+-   1 - osoba bez okularów
+
+:::{.panel-tabset}
+
+## Treningowy
+
+```{r}
+table(train_generator$classes)
+```
+
+## Walidacyjny
+
+```{r}
+table(val_generator$classes)
+```
+
+## Testowy
+
+```{r}
+table(test_generator$classes)
+```
+
+:::
+
+Zbiór nie jest zbalansowany, znacznie więcej jest zdjęć osób bez okularów.
+
+
+# Budowa sieci neuronowych
+
+Jako funkcję aktywacji wybrałem *relu*, a co ostatniej warstwy - *softmax*.
+
+## 1
+
+Pierwszą sieć zbudowałem z założeniem, aby nie była zbytnio skomplikowana. Składa się z 2 warstw neuronów.
+```{r model1, echo=TRUE, eval=FALSE}
+model1 <- keras_model_sequential() %>%
+  layer_dense(units = 16, activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+  layer_flatten() %>%
+  layer_dense(units = length (classes), activation = 'softmax')
+
+model1 %>% compile( 
+    loss = 'binary_crossentropy',
+    optimizer = "adam", 
+    metrics = c('accuracy'))
+```
+
+```{r history1, eval=FALSE}
+history <- model1 %>% fit(
+    train_generator, 
+    steps_per_epoch =100, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps =50
+)
+```
+
+```{r zapis model1, eval=FALSE}
+saveRDS(history, "rds/history_model1.rds")
+saveRDS(model1, "rds/model1.rds")
+```
+
+```{r wczytanie model1}
+history <- readRDS("rds/history_model1.rds")
+model1 <- readRDS("rds/model1.rds")
+```
+
+```{r pierwsza sieć, echo=TRUE}
+plot(history)
+```
+
+Na wykresie możemy zauważyć bardzo widoczne przeuczenie modelu.
+
+```{r model1 ewaluacja, eval=FALSE}
+evaulate_model1 <- model1 %>% evaluate(test_generator, steps = 50)
+```
+
+```{r zapis evaluate_model1, eval=FALSE}
+saveRDS(evaulate_model1, "rds/evaluate_model1.rds")
+```
+
+```{r wczytanie evaluate_model1}
+evaulate_model1 <- readRDS("rds/evaluate_model1.rds")
+```
+
+
+Model na zbiorze testowym uzyskał wynik `r evaulate_model1[1]` i `r evaulate_model1[2]`
+
+## 2
+
+Dodałem kilka dodatkowych warstw gęstych neuronów oraz warstwy dropout, aby zapobiec przeuczeniu.
+
+```{r model2, echo=TRUE, eval=FALSE}
+model2 <- keras_model_sequential() %>%
+  layer_dense(units = 16, activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dropout(0.3) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dropout(0.3) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_flatten() %>%
+  layer_dense(units = length(classes), activation = 'softmax')
+
+model2 %>% compile( 
+    loss = 'binary_crossentropy',
+    optimizer = "adam", 
+    metrics = c('accuracy'))
+```
+
+```{r history2, eval=FALSE}
+history <- model2 %>% fit(
+    train_generator, 
+    steps_per_epoch =100, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps =50
+)
+```
+
+```{r zapis model2, eval=FALSE}
+saveRDS(history, "rds/history_model2.rds")
+saveRDS(model2, "rds/model2.rds")
+```
+
+```{r wczytanie model2}
+history <- readRDS("rds/history_model2.rds")
+model2 <- readRDS("rds/model2.rds")
+```
+
+```{r druga sieć, echo=TRUE}
+plot(history)
+```
+
+```{r ewaluacja model2, eval=FALSE}
+evaulate_model2 <- model2 %>% evaluate(test_generator, steps = 50)
+```
+
+```{r zapis evaulate_model2, eval=FALSE}
+saveRDS(evaulate_model2, "rds/evaluate_model2.rds")
+```
+
+```{r wczytanie evaulate_model2}
+evaulate_model2 <- readRDS("rds/evaluate_model2.rds")
+```
+
+
+
+Model na zbiorze testowym uzyskał wynik `r evaulate_model2[1]` i `r evaulate_model2[2]`
+
+model na koniec
+
+```{r final_model, eval=FALSE, echo=TRUE}
+final_model <- keras_model_sequential() %>%
+layer_conv_2d(filters = 32, kernel_size = 3, 
+              activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+layer_max_pooling_2d(pool_size = 2) %>%
+layer_conv_2d(filters = 64, kernel_size = 3, activation = 'relu') %>%
+layer_max_pooling_2d(pool_size = 2) %>%
+layer_dropout(0.3) %>%
+layer_conv_2d(filters = 128, kernel_size=3, activation = 'relu') %>%
+layer_max_pooling_2d(pool_size = 2)%>%
+layer_flatten() %>%
+layer_dense(units = 128, activation = 'relu') %>%
+layer_dropout(0.3) %>%
+layer_dense(units = length (classes), activation = 'softmax')
+
+final_model %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_adam(lr = 1e-4), 
+    metrics = c('accuracy')
+)
+```
+
+```{r eval=FALSE}
+history <- final_model %>% fit(
+    train_generator, 
+    steps_per_epoch =100, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps =50
+)
+```
+
+```{r eval=FALSE}
+saveRDS(history, "rds/history_final_model.rds")
+saveRDS(final_model, "rds/final_model.rds")
+```
+
+```{r}
+history <- readRDS("rds/history_final_model.rds")
+final_model <- readRDS("rds/final_model.rds")
+```
+
+```{r echo=TRUE}
+plot(history)
+```
+
+
+```{r eval=FALSE}
+evaluate_final_model <- final_model %>% evaluate(test_generator, steps = 50)
+```
+
+```{r zapis evaulate_final_model, eval=FALSE}
+saveRDS(evaluate_final_model, "rds/evaluate_final_model.rds")
+```
+
+```{r wczytanie evaulate_final_model}
+evaulate_final_model <- readRDS("rds/evaluate_final_model.rds")
+```
+
+
+
+Model na zbiorze testowym uzyskał wynik `r evaulate_final_model[1]` i `r evaulate_final_model[2]`
+
