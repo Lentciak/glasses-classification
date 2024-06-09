@@ -16,6 +16,7 @@ format:
     toc-title: "Spis treści"
 language: 'polski.yml'
 editor: source
+lightbox: true
 echo: false
 warning: false
 message: false
@@ -33,10 +34,11 @@ Celem jest stworzenie jak najlepszej sieci neuronowej, przeznaczonej do klasyfik
 
 ```{r wczytanie bibliotek oraz danych}
 library(keras)
+library(imager)
 library(tidyverse)
+library(gt)
 data_dir = "dane/glasses"
 classes <- list.dirs("dane/glasses/train", full.names = FALSE, recursive = FALSE)
-library(imager)
 files <-  list.files(data_dir, recursive = T, full.name = T)
 with_glasses_example <- files[10009]
 without_glasses_example <- files[2013]
@@ -46,23 +48,37 @@ without_glasses_example <- load.image(without_glasses_example)
 
 Zbiór danych pochodzi z [Kaggle](https://www.kaggle.com/datasets/jeffheaton/glasses-or-no-glasses/data). Został stworzony na potrzeby projektu naukowego wchodzącego w kurs o zastosowaniach sieci głębokich na Washington University w St. Louis. Zawiera on `r length(files)` zdjęć twarzy osób noszących okulary lub nie. Zostały one stworzone przez generatywną sieć przeciwników (ang. Generative Adversarial Network).
 
-```{r podział na zbiór treningowy, walidacyjny i testowy}
+```{r podział na zbiór treningowy, walidacyjny i testowy, eval=FALSE}
 train_datagen <- image_data_generator()
 val_datagen <- image_data_generator()
 test_datagen <- image_data_generator()
 
 train_generator <- flow_images_from_directory(
-    "dane/glasses/train", train_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+    "dane/glasses/train", train_datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "binary"
 )
 
 val_generator <- flow_images_from_directory(
-    "dane/glasses/val", val_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+    "dane/glasses/val", val_datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "binary"
 )
 
 test_generator <- flow_images_from_directory(
-    "dane/glasses/test", test_datagen, target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+    "dane/glasses/test", test_datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "binary"
 )
+
+train_classes <- table(train_generator$classes)
+val_classes <- table(val_generator$classes)
+test_classes <- table(test_generator$classes)
+tabela_podzialu <- rbind(train_classes, val_classes,test_classes)
+saveRDS(tabela_podzialu, "rds/tabela_podzialu.rds")
 ```
+
+```{r wczytanie tabeli}
+tabela_podzialu <- readRDS("rds/tabela_podzialu.rds")
+```
+
 
 ### Przykładowe zdjęcia
 
@@ -93,44 +109,37 @@ Podzieliłem zbiór na odpowiednie części, gdzie rozkład klas widać w tabelk
 -   0 - osoba z okularami
 -   1 - osoba bez okularów
 
-:::{.panel-tabset}
-
-## Treningowy
-
-```{r}
-table(train_generator$classes)
+```{r tabela podziału na zbiory, echo=TRUE}
+#| label: tbl-tabela-podzialu
+#| tbl-cap: Liczba zdjęć danej klasy w zbiorze treningowym, walidacyjnym i testowym
+tabela_podzialu <- as.data.frame(tabela_podzialu)
+rownames(tabela_podzialu) <- c("Treningowy", "Walidacyjny", "Testowy")
+tabela_podzialu %>% gt(rownames_to_stub = T)
 ```
 
-## Walidacyjny
-
-```{r}
-table(val_generator$classes)
-```
-
-## Testowy
-
-```{r}
-table(test_generator$classes)
-```
-
-:::
 
 Zbiór nie jest zbalansowany, znacznie więcej jest zdjęć osób bez okularów.
 
 
 # Budowa sieci neuronowych
 
-Jako funkcję aktywacji wybrałem *relu*, a co ostatniej warstwy - *softmax*.
+Jako funkcję aktywacji wybrałem *relu*, a do ostatniej warstwy - *sigmoid*. Modele uczone były przez 30 epok z 50 krokami w każdej z nich. Walidacja odbyła się na 50 krokach.
+
+Funkcją straty jest binarna entropia krzyżowa, optymalizatorem jest `adam` i skupiłem się na *accuracy*.
+
+::: {.panel-tabset}
+
 
 ## 1
 
 Pierwszą sieć zbudowałem z założeniem, aby nie była zbytnio skomplikowana. Składa się z 2 warstw neuronów.
+
 ```{r model1, echo=TRUE, eval=FALSE}
 model1 <- keras_model_sequential() %>%
   layer_dense(units = 16, activation = 'relu',
               input_shape = c(150, 150, 3)) %>%
   layer_flatten() %>%
-  layer_dense(units = length (classes), activation = 'softmax')
+  layer_dense(units = 1, activation = 'sigmoid')
 
 model1 %>% compile( 
     loss = 'binary_crossentropy',
@@ -141,43 +150,36 @@ model1 %>% compile(
 ```{r history1, eval=FALSE}
 history <- model1 %>% fit(
     train_generator, 
-    steps_per_epoch =100, 
+    steps_per_epoch =50, 
     epochs = 30, 
     validation_data = val_generator, 
     validation_steps =50
 )
 ```
 
-```{r zapis model1, eval=FALSE}
-saveRDS(history, "rds/history_model1.rds")
-saveRDS(model1, "rds/model1.rds")
-```
-
-```{r wczytanie model1}
-history <- readRDS("rds/history_model1.rds")
-model1 <- readRDS("rds/model1.rds")
-```
-
-```{r pierwsza sieć, echo=TRUE}
-plot(history)
-```
-
-Na wykresie możemy zauważyć bardzo widoczne przeuczenie modelu.
-
 ```{r model1 ewaluacja, eval=FALSE}
 evaulate_model1 <- model1 %>% evaluate(test_generator, steps = 50)
 ```
 
-```{r zapis evaluate_model1, eval=FALSE}
+```{r zapis model1, eval=FALSE}
+saveRDS(history, "rds/history_model1.rds")
+saveRDS(model1, "rds/model1.rds")
 saveRDS(evaulate_model1, "rds/evaluate_model1.rds")
 ```
 
-```{r wczytanie evaluate_model1}
-evaulate_model1 <- readRDS("rds/evaluate_model1.rds")
+```{r wczytanie model1}
+history1 <- readRDS("rds/history_model1.rds")
+model1 <- readRDS("rds/model1.rds")
+evaluate_model1 <- readRDS("rds/evaluate_model1.rds")
 ```
 
+```{r pierwsza sieć}
+#| label: fig-history1
+#| fig-cap: Uczenie modelu 1
+plot(history1)
+```
 
-Model na zbiorze testowym uzyskał wynik `r evaulate_model1[1]` i `r evaulate_model1[2]`
+Na wykresie możemy zauważyć, że wartości wahały się pomiędzy 10 a 20 epoką.
 
 ## 2
 
@@ -187,13 +189,14 @@ Dodałem kilka dodatkowych warstw gęstych neuronów oraz warstwy dropout, aby z
 model2 <- keras_model_sequential() %>%
   layer_dense(units = 16, activation = 'relu',
               input_shape = c(150, 150, 3)) %>%
-  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 16, activation = 'relu') %>%
   layer_dropout(0.3) %>%
-  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 16, activation = 'relu') %>%
   layer_dropout(0.3) %>%
-  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 16, activation = 'relu') %>%
+  layer_dropout(0.3) %>%
   layer_flatten() %>%
-  layer_dense(units = length(classes), activation = 'softmax')
+  layer_dense(units = 1, activation = 'sigmoid')
 
 model2 %>% compile( 
     loss = 'binary_crossentropy',
@@ -204,44 +207,96 @@ model2 %>% compile(
 ```{r history2, eval=FALSE}
 history <- model2 %>% fit(
     train_generator, 
-    steps_per_epoch =100, 
+    steps_per_epoch =50, 
     epochs = 30, 
     validation_data = val_generator, 
     validation_steps =50
 )
 ```
 
+```{r ewaluacja model2, eval=FALSE}
+evaluate_model2 <- model2 %>% evaluate(test_generator, steps = 50)
+```
+
 ```{r zapis model2, eval=FALSE}
 saveRDS(history, "rds/history_model2.rds")
 saveRDS(model2, "rds/model2.rds")
+saveRDS(evaluate_model2, "rds/evaluate_model2.rds")
 ```
 
 ```{r wczytanie model2}
-history <- readRDS("rds/history_model2.rds")
+history2 <- readRDS("rds/history_model2.rds")
 model2 <- readRDS("rds/model2.rds")
+evaluate_model2 <- readRDS("rds/evaluate_model2.rds")
 ```
 
-```{r druga sieć, echo=TRUE}
-plot(history)
+```{r druga sieć}
+#| label: fig-history2
+#| fig-cap: Uczenie modelu 2
+plot(history2)
 ```
 
-```{r ewaluacja model2, eval=FALSE}
-evaulate_model2 <- model2 %>% evaluate(test_generator, steps = 50)
+Ostatecznie model jest przeuczony, czas na zmianę strategii.
+
+## 3
+
+Dalej chciałem spróbować zastosować warstwy konwolucyjne.
+
+
+```{r model3, echo=TRUE}
+model3 <- keras_model_sequential() %>%
+  layer_dense(units = 16, activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+  layer_dropout(0.1) %>%
+  layer_conv_2d(filters = 32, kernel_size = 3, 
+                activation = 'relu') %>%
+  layer_dropout(0.1) %>%
+  layer_dense(units = 16, activation = 'relu') %>%
+  layer_flatten() %>%
+  layer_dense(units = 1, activation = 'sigmoid')
+
+model3 %>% compile( 
+    loss = 'binary_crossentropy',
+    optimizer = optimizer_adam(lr = 1e-4), 
+    metrics = c('accuracy')
+)
 ```
 
-```{r zapis evaulate_model2, eval=FALSE}
-saveRDS(evaulate_model2, "rds/evaluate_model2.rds")
+```{r history3, eval=FALSE}
+history <- model3 %>% fit(
+    train_generator, 
+    steps_per_epoch =50, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps =50
+)
 ```
 
-```{r wczytanie evaulate_model2}
-evaulate_model2 <- readRDS("rds/evaluate_model2.rds")
+```{r ewaluacja model3, eval=FALSE}
+evaluate_model3 <- model3 %>% evaluate(test_generator, steps = 50)
 ```
 
+```{r zapisy model3, eval=FALSE}
+saveRDS(history, "rds/history_model3.rds")
+saveRDS(model3, "rds/model3.rds")
+saveRDS(evaluate_model3, "rds/evaluate_model3.rds")
+```
 
+```{r wczytanie model3}
+history3 <- readRDS("rds/history_model3.rds")
+model3 <- readRDS("rds/model3.rds")
+evaluate_model3 <- readRDS("rds/evaluate_model3.rds")
+```
 
-Model na zbiorze testowym uzyskał wynik `r evaulate_model2[1]` i `r evaulate_model2[2]`
+```{r trzecia sieć}
+#| label: fig-history3
+#| fig-cap: Uczenie modelu 3
+plot(history3)
+```
 
-model na koniec
+Wyniki są o wiele lepsze od poprzednich modeli.
+
+## Ostatni model
 
 ```{r final_model, eval=FALSE, echo=TRUE}
 final_model <- keras_model_sequential() %>%
@@ -257,53 +312,69 @@ layer_max_pooling_2d(pool_size = 2)%>%
 layer_flatten() %>%
 layer_dense(units = 128, activation = 'relu') %>%
 layer_dropout(0.3) %>%
-layer_dense(units = length (classes), activation = 'softmax')
+layer_dense(units = 1, activation = 'sigmoid')
 
 final_model %>% compile( 
-    loss = 'categorical_crossentropy',
+    loss = 'binary_crossentropy',
     optimizer = optimizer_adam(lr = 1e-4), 
     metrics = c('accuracy')
 )
 ```
 
-```{r eval=FALSE}
+```{r history4, eval=FALSE}
 history <- final_model %>% fit(
     train_generator, 
-    steps_per_epoch =100, 
+    steps_per_epoch =50, 
     epochs = 30, 
     validation_data = val_generator, 
     validation_steps =50
 )
 ```
 
-```{r eval=FALSE}
-saveRDS(history, "rds/history_final_model.rds")
-saveRDS(final_model, "rds/final_model.rds")
-```
-
-```{r}
-history <- readRDS("rds/history_final_model.rds")
-final_model <- readRDS("rds/final_model.rds")
-```
-
-```{r echo=TRUE}
-plot(history)
-```
-
-
-```{r eval=FALSE}
+```{r ewaluacja model4, eval=FALSE}
 evaluate_final_model <- final_model %>% evaluate(test_generator, steps = 50)
 ```
 
-```{r zapis evaulate_final_model, eval=FALSE}
+```{r zapis model4, eval=FALSE}
+saveRDS(history, "rds/history_final_model.rds")
+saveRDS(final_model, "rds/final_model.rds")
 saveRDS(evaluate_final_model, "rds/evaluate_final_model.rds")
 ```
 
-```{r wczytanie evaulate_final_model}
-evaulate_final_model <- readRDS("rds/evaluate_final_model.rds")
+```{r wczytanie model4}
+history_final <- readRDS("rds/history_final_model.rds")
+final_model <- readRDS("rds/final_model.rds")
+evaluate_final_model <- readRDS("rds/evaluate_final_model.rds")
 ```
 
+```{r czwarta sieć}
+#| label: fig-history4
+#| fig-cap: Uczenie ostatniego modelu 
+plot(history_final)
+```
 
+Możemy zauważyć, że tutaj nie występuje przeuczenie oraz wyniki są zadowalające.
 
-Model na zbiorze testowym uzyskał wynik `r evaulate_final_model[1]` i `r evaulate_final_model[2]`
+:::
 
+# Podsumowanie i wnioski
+
+```{r stworzenie tabeli z wynikami}
+tabela_wynikow <- as.data.frame(rbind(round(evaluate_model1,2), 
+                                      round(evaluate_model2,2), 
+                                      round(evaluate_model3,2), 
+                                      round(evaluate_final_model,2)))
+rownames(tabela_wynikow) <- c("model 1", "model 2", "model 3", "model 4")
+```
+
+```{r}
+#| label: tbl-tabela-wynikow
+#| tbl-cap: Wartości funkcji straty oraz accuracy dla poszczególnych modeli
+tabela_wynikow %>% gt(rownames_to_stub = T)
+```
+
+W @tbl-tabela-wynikow powyżej zawarłem wyniki jakie uzyskałem po nauczeniu modeli oraz sprawdzeniu ich na zbiorze testowym. Można zauważyć, że pierwszy z nich ma bardzo dużą, w porównaniu do innych, wartość funkcji straty. Accuracy na poziomie 0.85 nie jest wynikiem złym, natomiast można je poprawić.
+
+Drugi model znacząco obniżył wartość funkcji straty, kosztem małego spadku accuracy. 
+
+Zastosowanie warstw konwolucyjnych poprawiło możliwości, dochodząc do accuracy na poziomie 0.99. Wartość funkcji straty jest minimalna, porównując ją z pierwszym modelem. 
