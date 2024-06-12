@@ -1,6 +1,5 @@
 ---
 title: "Klasyfikacja twarzy osób noszących okulary"
-subtitle: "Projekt z Automatycznej Analizy Obrazu"
 author: "Igor Nowiński"
 format: 
   html:
@@ -308,10 +307,8 @@ layer_conv_2d(filters = 64, kernel_size = 3, activation = 'relu') %>%
 layer_max_pooling_2d(pool_size = 2) %>%
 layer_dropout(0.3) %>%
 layer_conv_2d(filters = 128, kernel_size=3, activation = 'relu') %>%
-layer_max_pooling_2d(pool_size = 2)%>%
-layer_flatten() %>%
 layer_dense(units = 128, activation = 'relu') %>%
-layer_dropout(0.3) %>%
+layer_flatten() %>%
 layer_dense(units = 1, activation = 'sigmoid')
 
 final_model %>% compile( 
